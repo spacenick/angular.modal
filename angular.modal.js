@@ -1,4 +1,4 @@
-var module = angular.module('app');
+var module = angular.module('ngMaleApp');
 
 module.modal = function(modalName, fn) {
 
@@ -96,4 +96,3 @@ module.modal = function(modalName, fn) {
 	}, 0);
 
 };
-
