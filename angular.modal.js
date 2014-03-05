@@ -1,19 +1,21 @@
 var module = angular.module('ngMaleApp');
 
-function getParamNames(fn) {
-    var funStr = fn.toString();
-    return funStr.slice(funStr.indexOf('(') + 1, funStr.indexOf(')')).match(/([^\s,]+)/g);
-}
-
-module.modal = function(modalName, fn) {
+module.modal = function(modalName, fn, stateObject) {
 
 	var definitionData = fn();
 	var link = definitionData.link;
 
+	/// The fn is the last element;
+	var linkFn = link[link.length - 1];
+
 	/// Split the $scope
-	var paramsName = getParamNames(link);
+	var paramsName = link.slice(0, link.length - 1);
 	var linkInjection = paramsName.slice(1);
 
+
+	var scopeObj = _.clone(definitionData.scope);
+	/// Always pass a callback to support modals
+	if (!scopeObj.callback) scopeObj.callback = "=";
 
 	//// Defin a directive of that name that is going to
 	//// Wrap the modal
@@ -21,7 +23,7 @@ module.modal = function(modalName, fn) {
 
 		return {
 
-			scope: definitionData.scope,
+			scope: scopeObj,
 			link: function(scope, elem, attrs) {
 
 
@@ -63,7 +65,7 @@ module.modal = function(modalName, fn) {
 					var args = [scope].concat(args.slice(k));
 
 					///// Call our definition function.
-					link.apply(null, args);
+					linkFn.apply(null, args);
 
 				});
 
@@ -86,11 +88,18 @@ module.modal = function(modalName, fn) {
 				//// Take callback function from scope if possible
 
 				var modalClosedSuccessFn = angular.isFunction(scope.callback) ? function(data){
+					elem.remove();
 					scope.callback(null, data);
-				} : angular.noop;
+				} : function() {
+					elem.remove();
+				};
+
 				var modalClosedErrorFn = angular.isFunction(scope.callback) ? function(err){
+					elem.remove();
 					scope.callback(err);
-				} : angular.noop;
+				} : function() {
+					elem.remove();
+				};
 
 
 				var modalInstance = $modal.open(modalOptions);
@@ -105,5 +114,117 @@ module.modal = function(modalName, fn) {
 
 
 	});
+
+
+	if (angular.isObject(stateObject)) {
+		// ---------------------------
+		// State Params Binding
+		// ---------------------------
+
+		// stateParms object syntax:
+		// {
+		// 	stateName: "me.xxx.xxxx.whatever",
+		// 	url: "/user/me/chat/myCategoryModal/:categoryId"
+		// 	parent: "me.chat",
+		// 	resolve: {
+		// 		// Classic resolve object
+		// 		category: ['$stateObject', function($stateObject) {
+		// 			return Parse.Object.getClass("Category").fetchById($stateObject.categoryId);
+		// 		}],
+		// 		/// Callback as a special resolve property!
+		// 		/// Under the hood, it will always close the modal and go back to parent state
+		// 		callback: ['$rootScope', function($rootScope){
+		// 			$rootScope.$broadcast('myModalHasBeenClosed')
+		// 		}]
+		// 	},
+		// 	/// Optional, u can give one if u want to do extra work
+		// 	/// it wont have access to the modal scope so its for third party processing
+		// 	/// like analytics or whatever
+		// 	controller: []
+		// }
+
+		// CamelCase -> to-dashed
+		var camelCaseToDashed = function(str) {
+			return str.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+		}
+
+
+		var customCallbackFn = !angular.isUndefined(stateObject.resolve) && !angular.isUndefined(stateObject.resolve.callback) ? stateObject.resolve.callback : angular.noop;
+		var customController = !angular.isUndefined(stateObject.controller) ? stateObject.controller : angular.noop;
+
+		module.config(['$stateProvider', function($stateProvider){
+
+
+			/// Generate a resolve fn
+			var resolveObj = angular.isObject(stateObject.resolve) ? stateObject.resolve : {};
+
+			resolveObj.callback = ['$state', '$injector', function($state, $injector) {
+				return function() {
+					$state.go(stateObject.parent);
+					var controllerFn = $injector.invoke(customCallbackFn);
+					controllerFn.call(null, arguments);
+				}
+			}]
+
+
+			/// Generate a controller function (array syntax) injecting our resolve
+			var controllerFn = [];
+			// Always inject the $scope first
+			controllerFn.push('$scope');
+			// Loop over the resolve obj to inject dependencies that will all be given to the modal
+			_.keys(resolveObj).forEach(function(resolveKey){
+				controllerFn.push(resolveKey);
+			});
+			// Add the $injector at the end too
+			controllerFn.push('$injector');
+
+			// And finally the controller function itself
+			controllerFn.push(function(){
+				var args = [].slice.call(arguments, 0);
+
+				var $scope = args[0];
+
+				// Generate our modal DOM
+				var domStr = "<div " + camelCaseToDashed(modalName);
+
+				// Current args index
+				var argsIndex = 1;
+				_.keys(resolveObj).forEach(function(resolveKey){
+					$scope[resolveKey] = args[argsIndex];
+					domStr += ' ' + camelCaseToDashed(resolveKey) + '="' + resolveKey + '"';
+					argsIndex++;
+				});
+
+				// Close domStr
+				domStr += '></div>';
+
+				var $injector = args[argsIndex];
+				var $compile = $injector.get('$compile');
+				var elem = $compile(domStr)($scope);
+				$('body').append(elem);
+
+			});
+
+
+			var resolveObject = _.clone(resolveObj);
+
+			$stateProvider.state(stateObject.stateName, {
+				url: stateObject.url,
+				parent: stateObject.parent,
+				/// Use the main injectModal ui-view defined in index.html
+				views: {
+					'injectedModal@': {
+						resolve: resolveObject,
+						controller: controllerFn
+					}
+				}
+			})
+
+
+		}])
+
+	}
+
+
 
 };
